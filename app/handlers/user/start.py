@@ -28,7 +28,8 @@ async def cmd_start(message: Message, session=get_session):
             )
 
         await message.answer(
-            f"Привет, {message.from_user.full_name} 👋",
+            f"Привет, {message.from_user.full_name} 👋\n"
+            "Здесь можно оформить заявку на велотрансфер.",
             reply_markup=main_kb,
         )
 
