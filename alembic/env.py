@@ -4,13 +4,13 @@ from logging.config import fileConfig
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from sqlalchemy import pool
 from app.database.database import Base
-from app.database import models
+from app.database import models  # noqa: F401 — регистрирует модели в Base.metadata
 from app.settings.config import settings
 from alembic import context
 
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+DATABASE_URL = settings.database_url.get_secret_value()
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -20,7 +20,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.database_url,
+        url=DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -38,7 +38,7 @@ def do_run_migrations(connection):
 
 async def run_migrations_online() -> None:
     async_engine: AsyncEngine = create_async_engine(
-        settings.database_url,
+        DATABASE_URL,
         poolclass=pool.NullPool,
     )
 

@@ -2,314 +2,220 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.database import get_session
 from app.handlers.admin.filters import IsAdmin
-from app.keyboards.admin import (
-    admin_menu_kb,
-    back_to_event_kb,
-    event_card_kb,
-    events_list_kb,
-    window_kb,
-)
+from app.keyboards.admin import cancel_kb, edit_menu_kb
 from app.keyboards.calendar import calendar_kb
-from app.services.admin import (
-    AdminError,
-    Target,
-    booking_counts,
-    find_slot,
-    format_event_card,
-    get_event,
-    list_events,
+from app.services.events import (
+    LIMITS,
+    RANGES,
+    EventError,
+    event_ranges,
+    format_event,
+    get_open_event,
     moscow_today,
-    parse_price,
-    parse_time_range,
     rename_event,
+    set_event_limit,
     set_event_price,
-    set_registration_open,
-    set_window_day,
-    set_window_time,
-    target_window,
-    toggle_point,
+    set_event_range,
 )
 
 logger = logging.getLogger(__name__)
-edit_router = Router()
-edit_router.message.filter(IsAdmin())
-edit_router.callback_query.filter(IsAdmin())
+router = Router()
+router.message.filter(IsAdmin())
+router.callback_query.filter(IsAdmin())
 
 
-class EditForm(StatesGroup):
+class EditEventForm(StatesGroup):
     name = State()
     price = State()
-    day = State()
-    time = State()
+    limit = State()
+    range = State()
 
 
-def _parse_window_callback(data: str) -> tuple[int, Target]:
-    """ad:w*:<event_id>:<target> → (event_id, target)."""
-    _, _, event_id, target = data.split(":")
-    return int(event_id), Target.parse(target)
+def _menu_callback(event_id: int) -> str:
+    return f"ad:ed:{event_id}"
 
 
-async def render_card(message: Message, event_id: int, *, edit: bool) -> None:
-    """Карточка события. edit=False — новым сообщением (после ввода текста)."""
-    try:
-        async for db in get_session():
-            event = await get_event(db, event_id)
-            total, _ = await booking_counts(db, event_id)
-    except AdminError as exc:
-        await message.answer(str(exc), reply_markup=admin_menu_kb())
-        return
-    text = format_event_card(event, bookings=total)
-    kb = event_card_kb(event)
-    if edit:
-        await message.edit_text(text, reply_markup=kb)
-    else:
-        await message.answer(text, reply_markup=kb)
+async def _edit_menu(session: AsyncSession, event_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    event = await get_open_event(session, event_id)
+    text = f"{format_event(event)}\n\nЧто изменить?"
+    return text, edit_menu_kb(event.id, [r.title for r in RANGES], LIMITS)
 
 
-async def _render_window(message: Message, event_id: int, target: Target) -> None:
-    async for db in get_session():
-        event = await get_event(db, event_id)
-        _, per_slot = await booking_counts(db, event_id)
-    window = target_window(event, target)
-    slot = find_slot(event, target)
+# --- меню редактирования ---
 
-    lines = [f"#{event.id} <b>{escape(event.name)}</b>", target.title, ""]
-    if window is None:
-        lines.append("Пункт не добавлен.")
-    else:
-        lines.append(f"Сейчас: <b>{window.label()}</b>")
-    if slot is not None:
-        if not slot.is_active:
-            lines.append("Пункт выключен — в новых заявках не предлагается.")
-        lines.append(f"Заявок на этот пункт: {per_slot.get(slot.id, 0)} из {slot.capacity}")
-    await message.edit_text(
-        "\n".join(lines),
-        reply_markup=window_kb(
-            event_id,
-            target,
-            exists=window is not None,
-            is_active=slot.is_active if slot else True,
-        ),
-    )
-
-
-# --- список и карточка ---
-
-@edit_router.callback_query(F.data == "ad:menu")
-async def cb_menu(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data.regexp(r"^ad:ed:\d+$"))
+async def cb_edit_menu(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     await state.clear()
-    await callback.answer()
-    await callback.message.edit_text("Админка.", reply_markup=admin_menu_kb())
-
-
-@edit_router.callback_query(F.data == "ad:list")
-async def cb_list(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await callback.answer()
     try:
-        async for db in get_session():
-            events = await list_events(db)
-    except Exception:
-        logger.exception("admin list events failed")
-        await callback.message.answer("Не удалось загрузить список событий.")
-        return
-
-    if not events:
-        await callback.message.edit_text("Событий пока нет.", reply_markup=admin_menu_kb())
-        return
-    await callback.message.edit_text(
-        "События (🟢 — регистрация открыта):",
-        reply_markup=events_list_kb(events),
-    )
-
-
-@edit_router.callback_query(F.data.startswith("ad:ev:"))
-async def cb_event(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await callback.answer()
-    await render_card(callback.message, int(callback.data.split(":")[-1]), edit=True)
-
-
-@edit_router.callback_query(F.data.startswith("ad:reg:"))
-async def cb_toggle_registration(callback: CallbackQuery) -> None:
-    event_id = int(callback.data.split(":")[-1])
-    try:
-        async for db in get_session():
-            event = await get_event(db, event_id)
-            event = await set_registration_open(db, event_id, not event.registration_open)
-    except AdminError as exc:
+        text, kb = await _edit_menu(session, int(callback.data.split(":")[2]))
+    except EventError as exc:
         await callback.answer(str(exc), show_alert=True)
         return
-    await callback.answer("Регистрация открыта" if event.registration_open else "Регистрация закрыта")
-    await render_card(callback.message, event_id, edit=True)
+    await callback.answer()
+    await callback.message.edit_text(text, reply_markup=kb)
 
 
 # --- название и цена ---
 
-@edit_router.callback_query(F.data.startswith("ad:en:"))
-async def cb_edit_name(callback: CallbackQuery, state: FSMContext) -> None:
-    event_id = int(callback.data.split(":")[-1])
-    await state.set_state(EditForm.name)
+@router.callback_query(F.data.regexp(r"^ad:ed:\d+:(name|price)$"))
+async def cb_edit_text_field(callback: CallbackQuery, state: FSMContext) -> None:
+    _, _, event_id, field = callback.data.split(":")
+    event_id = int(event_id)
+    await state.set_state(EditEventForm.name if field == "name" else EditEventForm.price)
     await state.update_data(edit_event_id=event_id)
     await callback.answer()
-    await callback.message.edit_text("Введи новое название:", reply_markup=back_to_event_kb(event_id))
+    prompt = "Введите новое название:" if field == "name" else "Введите новую цену в рублях:"
+    await callback.message.edit_text(prompt, reply_markup=cancel_kb(_menu_callback(event_id)))
 
 
-@edit_router.message(EditForm.name, F.text)
-async def msg_edit_name(message: Message, state: FSMContext) -> None:
+@router.message(EditEventForm.name, F.text)
+@router.message(EditEventForm.price, F.text)
+async def msg_edit_text_field(message: Message, state: FSMContext, session: AsyncSession) -> None:
     event_id = (await state.get_data())["edit_event_id"]
+    update = rename_event if await state.get_state() == EditEventForm.name.state else set_event_price
     try:
-        async for db in get_session():
-            await rename_event(db, event_id, message.text or "")
-    except AdminError as exc:
-        await message.answer(str(exc), reply_markup=back_to_event_kb(event_id))
+        await update(session, event_id, message.text)
+        text, kb = await _edit_menu(session, event_id)
+    except EventError as exc:
+        await message.answer(f"{exc} Ещё раз:", reply_markup=cancel_kb(_menu_callback(event_id)))
         return
     await state.clear()
-    await render_card(message, event_id, edit=False)
+    await message.answer(f"Сохранено ✅\n\n{text}", reply_markup=kb)
 
 
-@edit_router.callback_query(F.data.startswith("ad:ep:"))
-async def cb_edit_price(callback: CallbackQuery, state: FSMContext) -> None:
-    event_id = int(callback.data.split(":")[-1])
-    await state.set_state(EditForm.price)
-    await state.update_data(edit_event_id=event_id)
+# --- лимиты Крылатского ---
+
+@router.callback_query(F.data.regexp(r"^ad:ed:\d+:l(dropoff|pickup)$"))
+async def cb_edit_limit(callback: CallbackQuery, state: FSMContext) -> None:
+    _, _, event_id, raw = callback.data.split(":")
+    event_id, kind = int(event_id), raw[1:]
+    await state.set_state(EditEventForm.limit)
+    await state.update_data(edit_event_id=event_id, edit_limit=kind)
     await callback.answer()
     await callback.message.edit_text(
-        "Введи новую цену в рублях.\nВ уже оформленных заявках останется старая цена.",
-        reply_markup=back_to_event_kb(event_id),
+        f"{LIMITS[kind]}.\nВведите новое число. Уже принятые заявки сохранятся, даже если их больше.",
+        reply_markup=cancel_kb(_menu_callback(event_id)),
     )
 
 
-@edit_router.message(EditForm.price, F.text)
-async def msg_edit_price(message: Message, state: FSMContext) -> None:
-    event_id = (await state.get_data())["edit_event_id"]
+@router.message(EditEventForm.limit, F.text)
+async def msg_edit_limit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    data = await state.get_data()
+    event_id = data["edit_event_id"]
     try:
-        price = parse_price(message.text or "")
-        async for db in get_session():
-            await set_event_price(db, event_id, price)
-    except AdminError as exc:
-        await message.answer(str(exc), reply_markup=back_to_event_kb(event_id))
+        await set_event_limit(session, event_id, data["edit_limit"], message.text)
+        text, kb = await _edit_menu(session, event_id)
+    except EventError as exc:
+        await message.answer(f"{exc} Ещё раз:", reply_markup=cancel_kb(_menu_callback(event_id)))
         return
     await state.clear()
-    await render_card(message, event_id, edit=False)
+    await message.answer(f"Сохранено ✅\n\n{text}", reply_markup=kb)
 
 
-# --- окна расписания ---
+# --- диапазоны дат ---
+# В FSM: edit_event_id, edit_range (индекс в RANGES), edit_from (ISO, после выбора первого дня).
 
-@edit_router.callback_query(F.data.startswith("ad:w:"))
-async def cb_window(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await callback.answer()
-    event_id, target = _parse_window_callback(callback.data)
-    await _render_window(callback.message, event_id, target)
-
-
-def _edit_calendar_kb(event_id: int, shown: date):
-    # Без нижней границы по смыслу: порядок дат проверяется при сохранении.
+def _range_kb(data: dict, shown: date | None = None) -> InlineKeyboardMarkup:
+    if data.get("edit_from"):
+        min_day = date.fromisoformat(data["edit_from"])
+    else:
+        # Можно оставить уже прошедшее начало, например чтобы продлить идущий приём.
+        min_day = min(date.fromisoformat(data["current_from"]), moscow_today())
+    shown = max(shown or min_day, min_day.replace(day=1))
     return calendar_kb(
         kind="ed",
         year=shown.year,
         month=shown.month,
-        min_date=moscow_today(),
-        cancel_callback=f"ad:ev:{event_id}",
+        min_date=min_day,
+        cancel_callback=_menu_callback(data["edit_event_id"]),
     )
 
 
-@edit_router.callback_query(F.data.startswith("ad:wd:"))
-async def cb_window_day(callback: CallbackQuery, state: FSMContext) -> None:
-    event_id, target = _parse_window_callback(callback.data)
-    await state.set_state(EditForm.day)
-    await state.update_data(edit_event_id=event_id, edit_target=str(target))
+def _range_text(data: dict) -> str:
+    r = RANGES[data["edit_range"]]
+    if data.get("edit_from"):
+        return f"{r.title}: с <b>{date.fromisoformat(data['edit_from']):%d.%m.%Y}</b>\nВыберите <b>последний</b> день:"
+    return f"{r.title}\nСейчас: <b>{data['current_label']}</b>\n\nВыберите <b>первый</b> день:"
+
+
+@router.callback_query(F.data.regexp(r"^ad:ed:\d+:r\d$"))
+async def cb_edit_range(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    _, _, event_id, raw = callback.data.split(":")
+    idx = int(raw[1:])
+    try:
+        event = await get_open_event(session, int(event_id))
+    except EventError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    start, end = event_ranges(event)[RANGES[idx].field]
+    await state.set_state(EditEventForm.range)
+    await state.set_data({
+        "edit_event_id": event.id,
+        "edit_range": idx,
+        "current_from": start.isoformat(),
+        "current_label": f"{start:%d.%m.%Y} – {end:%d.%m.%Y}",
+    })
+    data = await state.get_data()
     await callback.answer()
-    await callback.message.edit_text(
-        f"{target.title}\nВыбери новую дату:",
-        reply_markup=_edit_calendar_kb(event_id, moscow_today()),
-    )
+    await callback.message.edit_text(_range_text(data), reply_markup=_range_kb(data))
 
 
-@edit_router.callback_query(EditForm.day, F.data.startswith("cal:ed:m:"))
-async def cb_edit_calendar_month(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(EditEventForm.range, F.data.startswith("cal:ed:m:"))
+async def cb_range_month(callback: CallbackQuery, state: FSMContext) -> None:
     shown = date.fromisoformat(f"{callback.data.split(':')[-1]}-01")
-    event_id = (await state.get_data())["edit_event_id"]
     await callback.answer()
-    await callback.message.edit_reply_markup(
-        reply_markup=_edit_calendar_kb(event_id, max(shown, moscow_today().replace(day=1))),
-    )
+    await callback.message.edit_reply_markup(reply_markup=_range_kb(await state.get_data(), shown))
 
 
-@edit_router.callback_query(EditForm.day, F.data.startswith("cal:ed:d:"))
-async def cb_edit_pick_day(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(EditEventForm.range, F.data.startswith("cal:ed:d:"))
+async def cb_range_day(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     day = date.fromisoformat(callback.data.split(":")[-1])
     data = await state.get_data()
-    event_id, target = data["edit_event_id"], Target.parse(data["edit_target"])
+
+    if not data.get("edit_from"):
+        await callback.answer()
+        await state.update_data(edit_from=day.isoformat())
+        data = await state.get_data()
+        await callback.message.edit_text(_range_text(data), reply_markup=_range_kb(data))
+        return
+
+    start = date.fromisoformat(data["edit_from"])
+    if day < start:
+        await callback.answer("Эта дата недоступна.", show_alert=True)
+        return
     try:
-        async for db in get_session():
-            await set_window_day(db, event_id, target, day)
-    except AdminError as exc:
-        # Остаёмся на календаре — можно выбрать другую дату.
+        await set_event_range(session, data["edit_event_id"], RANGES[data["edit_range"]].field, start, day)
+    except EventError as exc:
+        # Начинаем выбор диапазона заново.
+        await state.update_data(edit_from=None)
         await callback.answer(str(exc), show_alert=True)
+        data = await state.get_data()
+        await callback.message.edit_text(_range_text(data), reply_markup=_range_kb(data))
         return
+
     await state.clear()
-    await callback.answer("Дата сохранена")
-    await _render_window(callback.message, event_id, target)
+    await callback.answer("Сохранено")
+    text, kb = await _edit_menu(session, data["edit_event_id"])
+    await callback.message.edit_text(text, reply_markup=kb)
 
 
-@edit_router.callback_query(F.data.startswith("ad:wt:"))
-async def cb_window_time(callback: CallbackQuery, state: FSMContext) -> None:
-    event_id, target = _parse_window_callback(callback.data)
-    await state.set_state(EditForm.time)
-    await state.update_data(edit_event_id=event_id, edit_target=str(target))
-    await callback.answer()
-    await callback.message.edit_text(
-        f"{target.title}\nВведи время с–по, например <code>11:00-20:00</code>:",
-        reply_markup=back_to_event_kb(event_id),
-    )
+# --- неожиданный ввод ---
 
-
-@edit_router.message(EditForm.time, F.text)
-async def msg_window_time(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    event_id, target = data["edit_event_id"], Target.parse(data["edit_target"])
-    try:
-        starts_at, ends_at = parse_time_range(message.text or "")
-        async for db in get_session():
-            await set_window_time(db, event_id, target, starts_at, ends_at)
-    except AdminError as exc:
-        await message.answer(str(exc), reply_markup=back_to_event_kb(event_id))
-        return
-    await state.clear()
-    await render_card(message, event_id, edit=False)
-
-
-@edit_router.callback_query(F.data.startswith("ad:wx:"))
-async def cb_window_toggle(callback: CallbackQuery) -> None:
-    event_id, target = _parse_window_callback(callback.data)
-    try:
-        async for db in get_session():
-            await toggle_point(db, event_id, target)
-    except AdminError as exc:
-        await callback.answer(str(exc), show_alert=True)
-        return
-    await callback.answer()
-    await _render_window(callback.message, event_id, target)
-
-
-@edit_router.message(EditForm.name)
-@edit_router.message(EditForm.price)
-@edit_router.message(EditForm.time)
+@router.message(EditEventForm.name)
+@router.message(EditEventForm.price)
+@router.message(EditEventForm.limit)
 async def msg_expect_text(message: Message) -> None:
-    await message.answer("Пришли текстом или вернись к событию кнопкой выше.")
+    await message.answer("Пришлите текстом или нажмите «Отмена».")
 
 
-@edit_router.message(EditForm.day)
+@router.message(EditEventForm.range)
 async def msg_expect_calendar(message: Message) -> None:
-    await message.answer("Выбери дату в календаре выше.")
+    await message.answer("Выберите дату в календаре выше.")

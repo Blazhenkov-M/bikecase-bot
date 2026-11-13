@@ -1,6 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncAttrs, async_sessionmaker, AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
-from typing import AsyncGenerator
 
 from app.settings.config import settings
 
@@ -10,7 +9,7 @@ class Base(AsyncAttrs, DeclarativeBase):
 
 
 engine = create_async_engine(
-    url=settings.database_url,
+    url=settings.database_url.get_secret_value(),
     echo=False,
     future=True,
     connect_args={"server_settings": {"timezone": "UTC"}},
@@ -23,8 +22,3 @@ async_session = async_sessionmaker(
     expire_on_commit=False,
     class_=AsyncSession
 )
-
-
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with async_session() as session:
-        yield session

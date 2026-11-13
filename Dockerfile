@@ -16,4 +16,5 @@ COPY . .
 ENV PYTHONPATH=/app
 
 # Указываем команду для запуска вашего приложения
-CMD ["python", "app/main.py"]
+# Перед стартом применяем миграции (если схема актуальна — ничего не делает)
+CMD ["sh", "-c", "alembic upgrade head && python main.py"]

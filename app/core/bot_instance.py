@@ -2,7 +2,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from settings.config import settings
+from app.settings.config import settings
 
 
 bot = Bot(token=settings.bot_token.get_secret_value(),
