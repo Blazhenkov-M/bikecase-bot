@@ -34,12 +34,19 @@
 - После запуска `ss -tulpn`: снаружи по-прежнему слушает только 22. Новых портов нет, конфликтов с будущей Amnezia по портам нет.
 - ufw, SSH, fail2ban не трогали. `docker system prune` не запускали.
 
+## 2026-11-14: обновлены PDF согласия и политики
+
+- В `documents/` заменены оба PDF, новые имена: `Согласие_на_обработку_ПДн_bikecase_transfer_bot.pdf`, `Политика_конфиденциальности_bikecase_transfer_bot.pdf`. В `app/handlers/user/booking.py` (`CONSENT_DOCUMENTS`) прописаны новые имена.
+- Найдено: `documents/` была исключена из rsync, и на сервере её не было. Значит, с первого деплоя PDF клиентам не отправлялись (ошибка ловилась и писалась в лог). Исключение убрано из команды rsync в шпаргалке.
+- Миграций нет, бэкап не делали. `rsync` и `docker compose up -d --build`: пересоздан только `bikecase-bot-1`, Postgres не трогали.
+- Проверка: `/app/documents` в контейнере содержит оба PDF, в логе `Run polling for bot @bikecase_transfer_bot`, перезапусков 0.
+
 ## Шпаргалка
 
 Обновить код (с Mac, из папки проекта):
 ```
 rsync -az --exclude='.git/' --exclude='.venv/' --exclude='.idea/' --exclude='.claude/' \
-  --exclude='__pycache__/' --exclude='documents/' --exclude='.env' --exclude='.DS_Store' \
+  --exclude='__pycache__/' --exclude='.env' --exclude='.DS_Store' \
   --exclude='DEPLOY_LOG.md' ./ vps:bikecase_transfer_bot/
 ssh vps 'cd ~/bikecase_transfer_bot && docker compose up -d --build'
 ```
