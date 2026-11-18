@@ -41,6 +41,13 @@
 - Миграций нет, бэкап не делали. `rsync` и `docker compose up -d --build`: пересоздан только `bikecase-bot-1`, Postgres не трогали.
 - Проверка: `/app/documents` в контейнере содержит оба PDF, в логе `Run polling for bot @bikecase_transfer_bot`, перезапусков 0.
 
+## 2026-11-18: переименование репозитория и PDF
+
+- Локальная папка переименована в `bikecase-bot`, remote теперь `git@github.com:Blazhenkov-M/bikecase-bot.git` (пуш по SSH). Каталог на сервере не менялся: `~/bikecase_transfer_bot`.
+- PDF переименованы: `Согласие_на_обработку_ПД_bikecase_bot.pdf`, `Политика_обработки_ПД_bikecase_bot.pdf`. Обновлён `CONSENT_DOCUMENTS` в `app/handlers/user/booking.py`.
+- rsync без `--delete`, поэтому старые PDF на сервере удалены вручную. `docker compose up -d --build`: пересоздан только `bikecase-bot-1`, Postgres не трогали.
+- Проверка: в `/app/documents` только новые PDF, в логе `Run polling for bot @bikecase_transfer_bot`, перезапусков 0.
+
 ## Шпаргалка
 
 Обновить код (с Mac, из папки проекта):
