@@ -48,6 +48,12 @@
 - rsync без `--delete`, поэтому старые PDF на сервере удалены вручную. `docker compose up -d --build`: пересоздан только `bikecase-bot-1`, Postgres не трогали.
 - Проверка: в `/app/documents` только новые PDF, в логе `Run polling for bot @bikecase_transfer_bot`, перезапусков 0.
 
+## 2026-11-18: новый токен бота
+
+- Бот сменился: теперь `@bikecase_bot` (id 9125866011), раньше был `@bikecase_transfer_bot`. В `.env` (локально и на сервере) заменён `BOT_TOKEN`, на сервере права `600`. Сам токен в журнал не записан.
+- `docker compose up -d`: пересоздан только `bikecase-bot-1`. В логе `Run polling for bot @bikecase_bot`, перезапусков 0.
+- В коде имя бота не захардкожено, правок в коде не было.
+
 ## Шпаргалка
 
 Обновить код (с Mac, из папки проекта):
