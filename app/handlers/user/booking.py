@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 DOCUMENTS_DIR = Path(__file__).resolve().parents[3] / "documents"
-CONSENT_DOCUMENTS = ("Согласие_на_обработку_ПДн_bikecase_transfer_bot.pdf", "Политика_конфиденциальности_bikecase_transfer_bot.pdf")
+CONSENT_DOCUMENTS = ("Согласие_на_обработку_ПД_bikecase_bot.pdf", "Политика_обработки_ПД_bikecase_bot.pdf")
 # file_id уже загруженных PDF, чтобы не грузить файлы заново каждый раз
 _document_ids: dict[str, str] = {}
 
